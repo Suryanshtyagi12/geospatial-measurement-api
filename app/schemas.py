@@ -1,11 +1,14 @@
-from pydantic import BaseModel, ConfigDict
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict
+
 
 # Common
 class ErrorResponse(BaseModel):
     detail: str
     file_id: Optional[str] = None
+
 
 # File Responses
 class UploadedFileResponse(BaseModel):
@@ -21,6 +24,7 @@ class UploadedFileResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
 # Measurement Responses
 class MeasurementData(BaseModel):
     area_m2: Optional[float] = None
@@ -28,6 +32,7 @@ class MeasurementData(BaseModel):
     measurement_crs: Optional[str] = None
     geodesic_area_m2: Optional[float] = None
     geodesic_length_m: Optional[float] = None
+
 
 class FeatureResponse(BaseModel):
     index: int
@@ -39,6 +44,7 @@ class FeatureResponse(BaseModel):
     measurement_status: str
     measurements: Optional[MeasurementData] = None
     warnings: List[str]
+
 
 class FileMeasurementsResponse(BaseModel):
     file_id: str

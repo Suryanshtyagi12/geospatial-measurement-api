@@ -1,27 +1,38 @@
 import os
-import shutil
 import tempfile
 import zipfile
-from fastapi import APIRouter, UploadFile, Depends, File, HTTPException, Query, status
-from sqlalchemy.orm import Session
 from pathlib import Path
 
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from sqlalchemy.orm import Session
+
+from ..config import settings
 from ..database import get_db
-from ..models import UploadedFile, Feature
-from ..schemas import UploadedFileResponse, FileMeasurementsResponse, FeatureResponse, MeasurementData, ErrorResponse
+from ..exceptions import APIException
+from ..models import Feature, UploadedFile
+from ..schemas import (
+    FeatureResponse,
+    FileMeasurementsResponse,
+    MeasurementData,
+    UploadedFileResponse,
+)
 from ..services.file_service import process_and_save_file
 from ..utils.zip_safety import extract_shapefile_safe
-from ..exceptions import APIException
-from ..config import settings
 
 router = APIRouter(prefix="/api/files", tags=["Files"])
 
-@router.post("/", response_model=UploadedFileResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/", response_model=UploadedFileResponse, status_code=status.HTTP_201_CREATED
+)
 def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     # 1. Pre-checks (cheap, 4xx)
     ext = Path(file.filename).suffix.lower()
-    if ext not in ['.zip', '.kml']:
-        raise HTTPException(status_code=415, detail=f"Unsupported file extension: {ext}. Allowed: .zip, .kml")
+    if ext not in [".zip", ".kml"]:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file extension: {ext}. Allowed: .zip, .kml",
+        )
 
     # Read bytes to check size (in memory for now, up to 25MB is fine)
     # Actually, we can save it directly to temp file and check size there.
@@ -29,20 +40,18 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
         file_bytes = file.file.read()
     except Exception:
         raise HTTPException(status_code=400, detail="Could not read file.")
-    
+
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty file uploaded.")
-    
+
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     if len(file_bytes) > max_bytes:
         raise HTTPException(status_code=413, detail="File too large.")
 
     # 2. Create DB record as PROCESSING
-    file_type = 'kml' if ext == '.kml' else 'shapefile'
+    file_type = "kml" if ext == ".kml" else "shapefile"
     db_file = UploadedFile(
-        filename=file.filename,
-        file_type=file_type,
-        status="PROCESSING"
+        filename=file.filename, file_type=file_type, status="PROCESSING"
     )
     db.add(db_file)
     db.commit()
@@ -56,31 +65,39 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
         try:
             target_file_path = temp_path
-            
-            if file_type == 'shapefile':
+
+            if file_type == "shapefile":
                 # Safe extraction and validation
                 target_file_path = extract_shapefile_safe(temp_path, td)
 
             # Process
-            db_file = process_and_save_file(db, db_file.id, target_file_path, file.filename, file_type)
+            db_file = process_and_save_file(
+                db, db_file.id, target_file_path, file.filename, file_type
+            )
 
             if db_file.status == "FAILED":
                 # Throw a 422 if parsing fails
-                raise APIException(status_code=422, detail=db_file.error_message, file_id=db_file.id)
-                
+                raise APIException(
+                    status_code=422, detail=db_file.error_message, file_id=db_file.id
+                )
+
         except APIException:
             raise
         except zipfile.BadZipFile as e:
             db_file.status = "FAILED"
             db_file.error_message = f"Corrupt or invalid zip file: {str(e)}"
             db.commit()
-            raise APIException(status_code=422, detail=db_file.error_message, file_id=db_file.id)
+            raise APIException(
+                status_code=422, detail=db_file.error_message, file_id=db_file.id
+            )
         except HTTPException as he:
             # Re-wrap HTTPException as APIException with file_id
             db_file.status = "FAILED"
             db_file.error_message = he.detail
             db.commit()
-            raise APIException(status_code=he.status_code, detail=he.detail, file_id=db_file.id)
+            raise APIException(
+                status_code=he.status_code, detail=he.detail, file_id=db_file.id
+            )
         except Exception as e:
             # Unexpected exception (already handled in process_and_save_file, but just in case)
             db_file.status = "FAILED"
@@ -90,6 +107,7 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
     return db_file
 
+
 @router.get("/{id}/", response_model=UploadedFileResponse)
 def get_file(id: str, db: Session = Depends(get_db)):
     db_file = db.query(UploadedFile).filter(UploadedFile.id == id).first()
@@ -97,13 +115,14 @@ def get_file(id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="File not found")
     return db_file
 
+
 @router.get("/{id}/measurements/", response_model=FileMeasurementsResponse)
 def get_file_measurements(
     id: str,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     geometry_type: str = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     db_file = db.query(UploadedFile).filter(UploadedFile.id == id).first()
     if not db_file:
@@ -112,7 +131,7 @@ def get_file_measurements(
     query = db.query(Feature).filter(Feature.file_id == id)
     if geometry_type:
         query = query.filter(Feature.geometry_type == geometry_type)
-    
+
     total = query.count()
     features = query.order_by(Feature.feature_index).offset(offset).limit(limit).all()
 
@@ -125,7 +144,7 @@ def get_file_measurements(
                 length_m=f.length_m,
                 measurement_crs=f.measurement_crs,
                 geodesic_area_m2=f.geodesic_area_m2,
-                geodesic_length_m=f.geodesic_length_m
+                geodesic_length_m=f.geodesic_length_m,
             )
 
         feature_responses.append(
@@ -134,18 +153,14 @@ def get_file_measurements(
                 geometry_type=f.geometry_type,
                 geometry=f.geometry,
                 crs=f.crs,
-                geometry_crs="EPSG:4326", # Output is always EPSG:4326
+                geometry_crs="EPSG:4326",  # Output is always EPSG:4326
                 properties=f.properties,
                 measurement_status=f.measurement_status,
                 measurements=measurements,
-                warnings=f.warnings
+                warnings=f.warnings,
             )
         )
 
     return FileMeasurementsResponse(
-        file_id=id,
-        total=total,
-        limit=limit,
-        offset=offset,
-        features=feature_responses
+        file_id=id, total=total, limit=limit, offset=offset, features=feature_responses
     )

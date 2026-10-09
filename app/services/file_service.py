@@ -1,14 +1,18 @@
-import json
+import logging
+
 from shapely.geometry import mapping
 from sqlalchemy.orm import Session
-from ..models import UploadedFile, Feature
-from .parser import parse_geospatial_file, _sanitize_properties
+
+from ..models import Feature, UploadedFile
 from .measurement import measure_feature
-import logging
+from .parser import _sanitize_properties, parse_geospatial_file
 
 logger = logging.getLogger(__name__)
 
-def process_and_save_file(db: Session, file_id: str, file_path: str, filename: str, file_type: str) -> UploadedFile:
+
+def process_and_save_file(
+    db: Session, file_id: str, file_path: str, filename: str, file_type: str
+) -> UploadedFile:
     """
     Orchestrates parsing, measuring, and saving to DB.
     The UploadedFile record must already be created in PROCESSING state.
@@ -33,14 +37,14 @@ def process_and_save_file(db: Session, file_id: str, file_path: str, filename: s
         # Ensure we always transform geometry to EPSG:4326 for DB storage and output
         if gdf.crs and gdf.crs.to_string() != "EPSG:4326":
             gdf = gdf.to_crs("EPSG:4326")
-        
+
         feature_objects = []
 
         # 3. Measure & Build Feature Models
         for idx, row in gdf.iterrows():
             geom = row.geometry
             props = properties_list[idx]
-            
+
             # GeoJSON geometry
             geom_json = mapping(geom) if geom else None
             geom_type = geom.geom_type if geom else "None"
@@ -50,7 +54,7 @@ def process_and_save_file(db: Session, file_id: str, file_path: str, filename: s
                 meas_result = measure_feature(geom)
             except Exception as e:
                 # Per-feature failure does not fail the whole file
-                meas_result = measure_feature(None) # Returns UNSUPPORTED with warning
+                meas_result = measure_feature(None)  # Returns UNSUPPORTED with warning
                 meas_result.status = "FAILED"
                 meas_result.warnings.append(f"Measurement failed: {str(e)}")
 
@@ -68,7 +72,7 @@ def process_and_save_file(db: Session, file_id: str, file_path: str, filename: s
                 measurement_crs=meas_result.measurement_crs,
                 geodesic_area_m2=meas_result.geodesic_area_m2,
                 geodesic_length_m=meas_result.geodesic_length_m,
-                warnings=meas_result.warnings
+                warnings=meas_result.warnings,
             )
             feature_objects.append(db_feature)
 
