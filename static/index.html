@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geospatial File Measurement API</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            flex: 1 1 300px;
+        }
+        #map {
+            height: 500px;
+            border-radius: 8px;
+            width: 100%;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+        }
+        .loader {
+            display: none;
+            margin-top: 10px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .learnings-section {
+            margin-top: 40px;
+            background: #eef2f5;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 5px solid #007bff;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Geospatial File Measurement API</h1>
+    <p>Upload a Zipped Shapefile or KML to extract features, calculate precise UTM/Geodesic measurements, and visualize the data.</p>
+</header>
+
+<div class="container">
+    <div class="panel">
+        <h3>1. Upload File</h3>
+        <input type="file" id="fileInput" accept=".zip,.kml" />
+        <button class="btn" onclick="uploadFile()">Upload & Process</button>
+        <div id="loader" class="loader">Processing file, please wait...</div>
+        
+        <div id="fileInfo" style="margin-top: 20px; display: none;">
+            <h4>File Details</h4>
+            <p><strong>ID:</strong> <span id="fileId"></span></p>
+            <p><strong>Name:</strong> <span id="fileName"></span></p>
+            <p><strong>Features:</strong> <span id="fileFeatures"></span></p>
+            <p><strong>Status:</strong> <span id="fileStatus"></span></p>
+        </div>
+    </div>
+
+    <div class="panel" style="flex: 2 1 600px;">
+        <h3>2. Visualization</h3>
+        <div id="map"></div>
+    </div>
+</div>
+
+<div class="panel" style="margin-top: 20px;">
+    <h3>3. Measurements Data</h3>
+    <table id="measurementsTable">
+        <thead>
+            <tr>
+                <th>Index</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Measurement CRS</th>
+                <th>Area (m²)</th>
+                <th>Length (m)</th>
+                <th>Geodesic Cross-check</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr><td colspan="7">No data loaded.</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="learnings-section">
+    <h3>Main Learnings & Outcome</h3>
+    <p><strong>Outcome:</strong> A robust, secure, and fully dockerized FastAPI backend capable of dynamic spatial transformations, exact geodetic mathematics, and safe zip-slip mitigations.</p>
+    <ul>
+        <li><strong>Per-Feature UTM Calculation:</strong> Instead of applying a blanket global CRS, this app transforms EPSG:4326 geometries to localized UTM zones on a <em>per-feature</em> basis, ensuring highly accurate measurements globally with minimal distortion.</li>
+        <li><strong>Geodesic Cross-Checks:</strong> Integrated mathematically rigorous PyProj Geod cross-checks to constantly compare and validate the planar projected measurements against pure ellipsoid calculations.</li>
+        <li><strong>PyProj Axis Handling:</strong> Utilizing <code>always_xy=True</code> during transformations is crucial. Historically, coordinate orders (Lat/Lon vs Lon/Lat) shift between standards, causing widespread spatial inversion bugs if unhandled.</li>
+        <li><strong>Safe Extraction Architecture:</strong> Prevented dangerous directory traversal attacks (zip-slip) by explicitly enforcing filename whitelist extractions directly into a sandboxed temp directory instead of trusting internal zip paths.</li>
+    </ul>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    // Initialize Map
+    var map = L.map('map').setView([0, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    var geojsonLayer = null;
+
+    async function uploadFile() {
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput.files.length === 0) {
+            alert('Please select a file first.');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append('file', file);
+
+        document.getElementById('loader').style.display = 'block';
+        document.getElementById('fileInfo').style.display = 'none';
+
+        try {
+            const response = await fetch('/api/files/', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.detail || 'Upload failed');
+            }
+
+            // Display Info
+            document.getElementById('fileId').innerText = data.id;
+            document.getElementById('fileName').innerText = data.filename;
+            document.getElementById('fileFeatures').innerText = data.feature_count;
+            document.getElementById('fileStatus').innerText = data.status;
+            document.getElementById('fileInfo').style.display = 'block';
+
+            // Fetch Measurements
+            fetchMeasurements(data.id);
+
+        } catch (error) {
+            alert('Error: ' + error.message);
+        } finally {
+            document.getElementById('loader').style.display = 'none';
+        }
+    }
+
+    async function fetchMeasurements(fileId) {
+        try {
+            const response = await fetch(`/api/files/${fileId}/measurements/?limit=1000`);
+            const data = await response.json();
+
+            const tbody = document.querySelector('#measurementsTable tbody');
+            tbody.innerHTML = '';
+
+            const featuresForMap = [];
+
+            data.features.forEach(f => {
+                // Table Row
+                const row = document.createElement('tr');
+                const m = f.measurements || {};
+                
+                let area = m.area_m2 ? m.area_m2.toFixed(2) : '-';
+                let length = m.length_m ? m.length_m.toFixed(2) : '-';
+                let geodesic = '';
+                if (m.geodesic_area_m2) geodesic = `Area: ${m.geodesic_area_m2.toFixed(2)}`;
+                if (m.geodesic_length_m) geodesic = `Len: ${m.geodesic_length_m.toFixed(2)}`;
+
+                row.innerHTML = `
+                    <td>${f.index}</td>
+                    <td>${f.geometry_type}</td>
+                    <td>${f.measurement_status}</td>
+                    <td>${m.measurement_crs || '-'}</td>
+                    <td>${area}</td>
+                    <td>${length}</td>
+                    <td>${geodesic}</td>
+                `;
+                tbody.appendChild(row);
+
+                // Map Feature
+                if (f.geometry && f.geometry.coordinates) {
+                    featuresForMap.push({
+                        "type": "Feature",
+                        "geometry": f.geometry,
+                        "properties": {
+                            "index": f.index,
+                            "type": f.geometry_type,
+                            "area": area,
+                            "length": length
+                        }
+                    });
+                }
+            });
+
+            // Draw on Map
+            if (geojsonLayer) {
+                map.removeLayer(geojsonLayer);
+            }
+
+            geojsonLayer = L.geoJSON(featuresForMap, {
+                onEachFeature: function (feature, layer) {
+                    let popupContent = `<b>Index:</b> ${feature.properties.index}<br><b>Type:</b> ${feature.properties.type}`;
+                    if (feature.properties.area !== '-') popupContent += `<br><b>Area:</b> ${feature.properties.area} m²`;
+                    if (feature.properties.length !== '-') popupContent += `<br><b>Length:</b> ${feature.properties.length} m`;
+                    layer.bindPopup(popupContent);
+                }
+            }).addTo(map);
+
+            if (featuresForMap.length > 0) {
+                map.fitBounds(geojsonLayer.getBounds());
+            }
+
+        } catch (error) {
+            console.error('Failed to fetch measurements:', error);
+        }
+    }
+</script>
+
+</body>
+</html>
