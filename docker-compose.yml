@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+      - sqlite_data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:////app/data/geo_measure.db
+      - MAX_UPLOAD_SIZE_MB=25
+
+volumes:
+  sqlite_data:
